@@ -1,0 +1,17 @@
+{
+  "name": "xalto",
+  "owner": {
+    "name": "Xalto",
+    "email": "devtools@xalto.ai"
+  },
+  "metadata": {
+    "description": "Xalto Brain workspace plugins"
+  },
+  "plugins": [
+    {
+      "name": "brain",
+      "source": "./brain",
+      "description": "Brain — MCP connection to the central memory server with Google SSO"
+    }
+  ]
+}
