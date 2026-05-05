@@ -8,7 +8,7 @@ From the marketplace:
 
 ```
 /plugin marketplace add XALTO-AI/brain-plugin
-/plugin install brain@xalto
+/plugin install xalto@xalto
 ```
 
 ## Configuration

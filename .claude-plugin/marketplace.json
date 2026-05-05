@@ -9,9 +9,9 @@
   },
   "plugins": [
     {
-      "name": "brain",
-      "source": "./brain",
-      "description": "Brain — MCP connection to the central memory server with Google SSO"
+      "name": "xalto",
+      "source": "./xalto",
+      "description": "Xalto — MCP connection to the Brain memory server with Google SSO"
     }
   ]
 }

@@ -8,7 +8,7 @@ This repository is the public Claude Code marketplace for Xalto plugins. The ser
 
 ```
 /plugin marketplace add XALTO-AI/brain-plugin
-/plugin install brain@xalto
+/plugin install xalto@xalto
 /mcp                                  # Google OAuth flow against your Brain server
 ```
 
@@ -33,7 +33,7 @@ For Claude Desktop and other MCP clients that reject self-signed certs, point th
 
 ```
 .claude-plugin/marketplace.json   # registry manifest
-brain/                            # the plugin
+xalto/                            # the plugin (MCP server-key remains "brain")
   .claude-plugin/plugin.json
   .mcp.json                       # MCP transport config
   hooks/                          # session-start hook
