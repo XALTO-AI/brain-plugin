@@ -4,5 +4,9 @@
   "version": "0.1.0",
   "author": {
     "name": "Xalto"
+  },
+  "validator": {
+    "attestation_pubkey_pin_mode": "tofu",
+    "attestation_pubkey_pin_path": "$HOME/Library/Application Support/BrainValidator/attestation-pin"
   }
 }
