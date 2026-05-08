@@ -25,7 +25,32 @@ BRAIN_SERVER_URL="${BRAIN_SERVER_URL:-https://127.0.0.1:7443}"
 # Claude Code may not propagate.
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "$HOOK_DIR/.." && pwd)"
-BUNDLED_VALIDATOR="$PLUGIN_DIR/binaries/brain-validator"
+
+# Detect host triple and pick the matching pre-built binary. The plugin
+# bundle ships six release binaries — one per (os, arch) — so a fresh
+# install on any supported platform Just Works without compilation. The
+# triple detection mirrors what `uname` reports across the shells the
+# plugin runs under: zsh / bash on macOS+Linux, Git Bash on Windows.
+case "$(uname -s)" in
+  Darwin)               BUNDLED_OS="darwin"  ;;
+  Linux)                BUNDLED_OS="linux"   ;;
+  MINGW*|CYGWIN*|MSYS*) BUNDLED_OS="windows" ;;
+  *)                    BUNDLED_OS=""        ;;
+esac
+case "$(uname -m)" in
+  arm64|aarch64)        BUNDLED_ARCH="arm64" ;;
+  x86_64|amd64)         BUNDLED_ARCH="amd64" ;;
+  *)                    BUNDLED_ARCH=""      ;;
+esac
+if [[ -n "$BUNDLED_OS" && -n "$BUNDLED_ARCH" ]]; then
+  if [[ "$BUNDLED_OS" == "windows" ]]; then
+    BUNDLED_VALIDATOR="$PLUGIN_DIR/binaries/brain-validator-${BUNDLED_OS}-${BUNDLED_ARCH}.exe"
+  else
+    BUNDLED_VALIDATOR="$PLUGIN_DIR/binaries/brain-validator-${BUNDLED_OS}-${BUNDLED_ARCH}"
+  fi
+else
+  BUNDLED_VALIDATOR=""
+fi
 
 # Workspace-server reachability check. If unreachable we skip everything
 # below — there's no point asking the agent to register against a server
@@ -36,15 +61,22 @@ if ! curl -sk --connect-timeout 3 --max-time 5 "${BRAIN_SERVER_URL}/health" > /d
   exit 0
 fi
 
-# Resolve which validator binary to use. Bundled wins; fall back to PATH so
-# a developer with a hand-built binary on PATH (the dev-loop convention
-# documented in CLAUDE.md) can run without re-bundling on every change.
-if [[ -x "$BUNDLED_VALIDATOR" ]]; then
+# Resolve which validator binary to use. Platform-specific bundle wins;
+# fall back to PATH so a developer with a hand-built binary on PATH
+# (the dev-loop convention documented in CLAUDE.md) can run without
+# re-bundling on every change.
+if [[ -n "$BUNDLED_VALIDATOR" && -x "$BUNDLED_VALIDATOR" ]]; then
   BRAIN_VALIDATOR="$BUNDLED_VALIDATOR"
 elif command -v brain-validator >/dev/null 2>&1; then
   BRAIN_VALIDATOR="$(command -v brain-validator)"
 else
-  echo "WARNING: brain-validator binary not found (expected at $BUNDLED_VALIDATOR or on PATH)." >&2
+  echo "WARNING: brain-validator binary not found." >&2
+  if [[ -n "$BUNDLED_VALIDATOR" ]]; then
+    echo "  Looked for $BUNDLED_VALIDATOR (host triple ${BUNDLED_OS}-${BUNDLED_ARCH}) and on PATH." >&2
+  else
+    echo "  Host platform $(uname -s)/$(uname -m) has no bundled binary; install via your" >&2
+    echo "  platform's package manager or build from source: https://github.com/XALTO-AI/brain-validator" >&2
+  fi
   echo "  Audit chain finality will not advance until the validator is installed." >&2
   BRAIN_VALIDATOR=""
 fi
