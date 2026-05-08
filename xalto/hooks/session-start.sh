@@ -1,67 +1,204 @@
 #!/usr/bin/env bash
-# Session start hook — validates workspace-server connectivity and injects an
-# agent-facing instruction so the assistant loads the user's Brain profile
-# before responding to the first message.
+# Session start hook — validates workspace-server connectivity, ensures the
+# Brain audit-chain validator daemon is installed and healthy, and injects
+# agent-facing instructions for the upcoming session.
 #
-# Auth is handled automatically by Claude Code via MCP OAuth 2.1.
+# The validator install path is intentionally agent-driven: the hook detects
+# missing/unhealthy daemon and emits a system-instruction telling Claude Code
+# to perform the one-time install via the `audit_device_register` MCP tool.
+# This sidesteps the bearer-token-in-env problem entirely — Claude Code's
+# MCP session is already authenticated to the user's Google identity, and
+# that's the same identity the workspace-server uses to gate registration.
+#
+# The validator binary itself ships INSIDE this plugin at
+# `${PLUGIN_DIR}/binaries/brain-validator`, replacing the deferred Plan task
+# B8 signed-installer path. This collapses the validator's distribution
+# channel into the plugin marketplace's; the trade-off is documented in the
+# audit-chain spec under "Validator daemon distribution".
 
 set -euo pipefail
 
 BRAIN_SERVER_URL="${BRAIN_SERVER_URL:-https://127.0.0.1:7443}"
 
-# Check workspace-server health (allow self-signed cert with -k).
-# If unreachable we warn to stderr and skip the profile-load instruction —
-# there's no point telling the agent to call a tool that can't answer.
+# Resolve plugin dir from this hook's path so the validator binary, if
+# bundled, can be found without depending on PATH or environment variables
+# Claude Code may not propagate.
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_DIR="$(cd "$HOOK_DIR/.." && pwd)"
+BUNDLED_VALIDATOR="$PLUGIN_DIR/binaries/brain-validator"
+
+# Workspace-server reachability check. If unreachable we skip everything
+# below — there's no point asking the agent to register against a server
+# that can't answer.
 if ! curl -sk --connect-timeout 3 --max-time 5 "${BRAIN_SERVER_URL}/health" > /dev/null 2>&1; then
   echo "WARNING: Workspace server unreachable at ${BRAIN_SERVER_URL}" >&2
   echo "  Start it with: docker compose up -d" >&2
   exit 0
 fi
 
-# Brain audit-chain validator daemon — gate per the audit-chain blockchain
-# design (specs/2026-05-07-audit-chain-blockchain-design.md §"Core, not
-# optional"). The daemon is required for chain finality; without it every
-# block stays in `mini-only` state.
-#
-# TODO: flip back to fail-closed (`exit 1`) once Plan task B8's signed
-# `.pkg` distribution path is end-to-end — i.e. notarization creds wired,
-# server publishes to `<data_root>/distribution/validator-installers/`,
-# bootstrap can actually `sudo installer -pkg ... -target /` successfully.
-# Until then the gate has to be warn-only, otherwise a clean dev machine
-# can't start the plugin (chicken-and-egg: the bootstrap needs a published
-# installer the build pipeline can't yet produce). Tracked in the plan's
-# "What's deferred" section.
-#
-# Override: set BRAIN_VALIDATOR_GATE=fail to opt back into fail-closed
-# behaviour for environments where the install path is already in place.
-BRAIN_VALIDATOR_GATE="${BRAIN_VALIDATOR_GATE:-warn}"
+# Resolve which validator binary to use. Bundled wins; fall back to PATH so
+# a developer with a hand-built binary on PATH (the dev-loop convention
+# documented in CLAUDE.md) can run without re-bundling on every change.
+if [[ -x "$BUNDLED_VALIDATOR" ]]; then
+  BRAIN_VALIDATOR="$BUNDLED_VALIDATOR"
+elif command -v brain-validator >/dev/null 2>&1; then
+  BRAIN_VALIDATOR="$(command -v brain-validator)"
+else
+  echo "WARNING: brain-validator binary not found (expected at $BUNDLED_VALIDATOR or on PATH)." >&2
+  echo "  Audit chain finality will not advance until the validator is installed." >&2
+  BRAIN_VALIDATOR=""
+fi
 
-if ! command -v brain-validator >/dev/null 2>&1; then
-  echo "WARNING: Brain validator daemon not installed (audit chain unfinalized)." >&2
-  echo "  Once Plan task B8's installer path is end-to-end, the bootstrap" >&2
-  echo "  hook at xalto/hooks/bootstrap-validator.sh will install on first run." >&2
-  if [[ "$BRAIN_VALIDATOR_GATE" == "fail" ]]; then
-    if ! bash "$(dirname "${BASH_SOURCE[0]}")/bootstrap-validator.sh"; then
-      echo "Brain bootstrap failed; refusing to start session." >&2
-      echo "Diagnose with /brain-validator and rerun, or contact your admin." >&2
-      exit 1
-    fi
-  fi
-elif ! brain-validator status >/dev/null 2>&1; then
-  echo "WARNING: Brain validator daemon installed but not running." >&2
-  echo "  Run \`brain-validator restart\` (or /brain-validator restart) to recover." >&2
-  if [[ "$BRAIN_VALIDATOR_GATE" == "fail" ]]; then
-    exit 1
+# Probe daemon state. `status --json` is the machine-readable shape the
+# detect-and-instruct flow relies on: missing config / unreachable daemon /
+# unhealthy daemon all surface deterministically without polluting stderr.
+INSTALLED="false"
+RUNNING="false"
+HEALTHY="false"
+STATUS_JSON=""
+if [[ -n "$BRAIN_VALIDATOR" ]]; then
+  STATUS_JSON="$("$BRAIN_VALIDATOR" status --json 2>/dev/null || true)"
+  if [[ -n "$STATUS_JSON" ]]; then
+    INSTALLED="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys;d=json.load(sys.stdin);print("true" if d.get("installed") else "false")' 2>/dev/null || echo "false")"
+    RUNNING="$(printf '%s'   "$STATUS_JSON" | python3 -c 'import json,sys;d=json.load(sys.stdin);print("true" if d.get("running")   else "false")' 2>/dev/null || echo "false")"
+    HEALTHY="$(printf '%s'   "$STATUS_JSON" | python3 -c 'import json,sys;d=json.load(sys.stdin);print("true" if d.get("healthy")   else "false")' 2>/dev/null || echo "false")"
   fi
 fi
 
-# Emit an agent-facing instruction on stdout. Claude Code injects the
-# SessionStart hook's stdout into the session context, so the assistant
-# sees this before the user's first message.
+# ── Emit agent instruction(s) on stdout ───────────────────────────────
+#
+# Claude Code injects SessionStart-hook stdout as a single system reminder.
+# Multiple sections concatenate into one block; the agent reads them in
+# order and acts.
+
+# Brain validator install path — emitted only when needed.
+if [[ -n "$BRAIN_VALIDATOR" && "$INSTALLED" != "true" ]]; then
+  HOSTNAME_LABEL="$(scutil --get ComputerName 2>/dev/null || hostname)"
+  cat <<EOF
+# Brain audit-chain validator install required
+
+The Brain audit-chain validator daemon is not installed on this device. It
+must be installed before this session can proceed — chain finality depends
+on a co-signing validator running on the employee's laptop.
+
+The install uses your current MCP session's authenticated identity, so no
+tokens or credentials need to be copied. Perform these steps in order
+before responding to the user's first message:
+
+  Step 1 — Generate the device keypair (idempotent: re-running returns
+  the same key if one already exists in the keychain):
+
+      $BRAIN_VALIDATOR generate-key --label "$HOSTNAME_LABEL"
+
+  This prints a one-line JSON object with fields \`device_pubkey_b64\`
+  and \`device_label\`. Capture both.
+
+  macOS will prompt once for keychain access — that's the OS confirming
+  device-key creation. Click "Always Allow" so future ticks don't prompt.
+
+  Step 2 — Register this device with the Mini by calling the MCP tool
+  \`audit_device_register\` with:
+
+      {
+        "device_pubkey_b64": "<from step 1>",
+        "device_label":      "<from step 1>"
+      }
+
+  The tool authenticates via the current MCP session (your Google
+  identity) and emits a \`validator_added\` block on the audit chain.
+  The response is a JSON object with these fields, all of which you'll
+  need in step 3:
+      device_id
+      registered_block_id
+      registered_block_sig
+      se_mk_pubkey_pem
+      attestation_pubkey_b64
+      employee_slug
+
+  Step 3 — Persist the registration locally. Combine the step-2 response
+  with \`device_label\` from step 1 into a single JSON blob and run:
+
+      $BRAIN_VALIDATOR install-config --registration-json '<json blob>'
+
+  The blob must include all of: device_id, registered_block_id,
+  registered_block_sig, se_mk_pubkey_pem, attestation_pubkey_b64,
+  employee_slug, device_label. install-config writes the daemon's config
+  + persisted-registration files and TOFU-pins the attestation pubkey.
+
+  Step 4 — Start the daemon as a backgrounded process (launchd plist
+  wiring is a follow-up; for v1 pilot we run it foreground-detached):
+
+      nohup $BRAIN_VALIDATOR daemon > /tmp/brain-validator.out 2>&1 &
+      disown
+
+  Step 5 — Confirm the daemon is healthy:
+
+      sleep 3
+      $BRAIN_VALIDATOR status --json
+
+  The output's \`healthy\` field must be \`true\`. If it is, tell the
+  user in one sentence that the validator was installed and proceed with
+  their original request.
+
+  If any step fails, do NOT proceed with the user's request. Surface the
+  error verbatim and ask the user how they want to handle it. Likely
+  causes: decryptd not running on the Mini (keychain or SE-MK pubkey
+  unavailable), workspace-server unreachable, or a stale registration
+  blocking re-install (use \`$BRAIN_VALIDATOR wipe\` then retry).
+
+EOF
+elif [[ -n "$BRAIN_VALIDATOR" && "$RUNNING" != "true" ]]; then
+  cat <<EOF
+# Brain audit-chain validator daemon is registered but not running
+
+The bootstrap files are on disk (config + registration), but the daemon
+process isn't running yet — no status snapshot exists. Start it before
+responding to the user's first message:
+
+      nohup $BRAIN_VALIDATOR daemon > /tmp/brain-validator.out 2>&1 &
+      disown
+      sleep 3
+      $BRAIN_VALIDATOR status --json
+
+The output's \`healthy\` field must be \`true\`. If it isn't, surface
+the \`last_error\` field plus the tail of /tmp/brain-validator.out,
+then ask the user how to proceed.
+
+EOF
+elif [[ -n "$BRAIN_VALIDATOR" && "$HEALTHY" != "true" ]]; then
+  cat <<EOF
+# Brain audit-chain validator daemon is running but not healthy
+
+The validator is registered and the daemon process has ticked, but its
+last status snapshot reports \`healthy: false\`. Diagnose and recover
+before responding to the user's first message:
+
+      $BRAIN_VALIDATOR status --json
+
+Check the snapshot's \`last_error\` field. If the daemon exited, restart it:
+
+      nohup $BRAIN_VALIDATOR daemon > /tmp/brain-validator.out 2>&1 &
+      disown
+      sleep 3
+      $BRAIN_VALIDATOR status --json
+
+If the second check still reports unhealthy, do NOT proceed with the
+user's request. Surface \`last_error\` plus the tail of
+/tmp/brain-validator.out and ask the user how to proceed. Common
+causes: workspace-server unreachable, the chain has a break newer than
+this device's registration, or the device's signing key was rotated
+server-side.
+
+EOF
+fi
+
+# Existing memory-profile instruction. Always emitted; valid regardless
+# of validator state because memory_load_profile is independent of the
+# audit chain.
 cat <<EOF
 # Brain session start
 
-Call the MCP tool `memory_load_profile` now, before responding to the user's
+Call the MCP tool \`memory_load_profile\` now, before responding to the user's
 first message. It returns the user's profile, their personal index, recent
 memory activity, and the status of their external service integrations. The
 "Integrations" section in the response is addressed to you and prescribes
