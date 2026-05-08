@@ -18,30 +18,41 @@ if ! curl -sk --connect-timeout 3 --max-time 5 "${BRAIN_SERVER_URL}/health" > /d
   exit 0
 fi
 
-# Brain audit-chain validator daemon — fail-closed enforcement per the
-# audit-chain blockchain design (specs/2026-05-07-audit-chain-blockchain-design.md
-# §"Core, not optional"). The daemon is required for chain finality; a
-# session that can't talk to a healthy validator should not proceed,
-# because every block written during this session would otherwise be
-# stuck in `mini-only` state.
+# Brain audit-chain validator daemon — gate per the audit-chain blockchain
+# design (specs/2026-05-07-audit-chain-blockchain-design.md §"Core, not
+# optional"). The daemon is required for chain finality; without it every
+# block stays in `mini-only` state.
 #
-# - If the binary is not on PATH we run the first-run bootstrap, which
-#   downloads + verifies + installs the signed daemon installer.
-# - If the binary exists but `brain-validator status` is unhealthy, we
-#   surface a remediation banner and refuse the session.
+# TODO: flip back to fail-closed (`exit 1`) once Plan task B8's signed
+# `.pkg` distribution path is end-to-end — i.e. notarization creds wired,
+# server publishes to `<data_root>/distribution/validator-installers/`,
+# bootstrap can actually `sudo installer -pkg ... -target /` successfully.
+# Until then the gate has to be warn-only, otherwise a clean dev machine
+# can't start the plugin (chicken-and-egg: the bootstrap needs a published
+# installer the build pipeline can't yet produce). Tracked in the plan's
+# "What's deferred" section.
+#
+# Override: set BRAIN_VALIDATOR_GATE=fail to opt back into fail-closed
+# behaviour for environments where the install path is already in place.
+BRAIN_VALIDATOR_GATE="${BRAIN_VALIDATOR_GATE:-warn}"
+
 if ! command -v brain-validator >/dev/null 2>&1; then
-  echo "Brain validator daemon not installed. Bootstrapping..." >&2
-  if ! bash "$(dirname "${BASH_SOURCE[0]}")/bootstrap-validator.sh"; then
-    echo "Brain bootstrap failed; refusing to start session." >&2
-    echo "Diagnose with /brain-validator and rerun, or contact your admin." >&2
+  echo "WARNING: Brain validator daemon not installed (audit chain unfinalized)." >&2
+  echo "  Once Plan task B8's installer path is end-to-end, the bootstrap" >&2
+  echo "  hook at xalto/hooks/bootstrap-validator.sh will install on first run." >&2
+  if [[ "$BRAIN_VALIDATOR_GATE" == "fail" ]]; then
+    if ! bash "$(dirname "${BASH_SOURCE[0]}")/bootstrap-validator.sh"; then
+      echo "Brain bootstrap failed; refusing to start session." >&2
+      echo "Diagnose with /brain-validator and rerun, or contact your admin." >&2
+      exit 1
+    fi
+  fi
+elif ! brain-validator status >/dev/null 2>&1; then
+  echo "WARNING: Brain validator daemon installed but not running." >&2
+  echo "  Run \`brain-validator restart\` (or /brain-validator restart) to recover." >&2
+  if [[ "$BRAIN_VALIDATOR_GATE" == "fail" ]]; then
     exit 1
   fi
-fi
-
-if ! brain-validator status >/dev/null 2>&1; then
-  echo "Brain validator daemon installed but not running." >&2
-  echo "Run \`brain-validator restart\` (or /brain-validator restart) to recover." >&2
-  exit 1
 fi
 
 # Emit an agent-facing instruction on stdout. Claude Code injects the
