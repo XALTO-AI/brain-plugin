@@ -125,11 +125,11 @@ before responding to the user's first message:
   employee_slug, device_label. install-config writes the daemon's config
   + persisted-registration files and TOFU-pins the attestation pubkey.
 
-  Step 4 — Start the daemon as a backgrounded process (launchd plist
-  wiring is a follow-up; for v1 pilot we run it foreground-detached):
+  Step 4 — Register the daemon as a LaunchAgent so it survives reboots.
+  This writes ~/Library/LaunchAgents/com.xalto.brain-validator.plist and
+  loads it; launchd then keeps the daemon running and respawns on crash:
 
-      nohup $BRAIN_VALIDATOR daemon > /tmp/brain-validator.out 2>&1 &
-      disown
+      $BRAIN_VALIDATOR install-service
 
   Step 5 — Confirm the daemon is healthy:
 
@@ -152,17 +152,18 @@ elif [[ -n "$BRAIN_VALIDATOR" && "$RUNNING" != "true" ]]; then
 # Brain audit-chain validator daemon is registered but not running
 
 The bootstrap files are on disk (config + registration), but the daemon
-process isn't running yet — no status snapshot exists. Start it before
-responding to the user's first message:
+process isn't running yet — no status snapshot exists. Bring it back
+under launchd before responding to the user's first message:
 
-      nohup $BRAIN_VALIDATOR daemon > /tmp/brain-validator.out 2>&1 &
-      disown
+      $BRAIN_VALIDATOR install-service
       sleep 3
       $BRAIN_VALIDATOR status --json
 
-The output's \`healthy\` field must be \`true\`. If it isn't, surface
-the \`last_error\` field plus the tail of /tmp/brain-validator.out,
-then ask the user how to proceed.
+\`install-service\` is idempotent — if the LaunchAgent is already
+loaded, it kicks the existing job. The output's \`healthy\` field must
+be \`true\`. If it isn't, surface the \`last_error\` field plus the
+tail of ~/Library/Logs/brain-validator.err.log, then ask the user how
+to proceed.
 
 EOF
 elif [[ -n "$BRAIN_VALIDATOR" && "$HEALTHY" != "true" ]]; then
@@ -175,19 +176,19 @@ before responding to the user's first message:
 
       $BRAIN_VALIDATOR status --json
 
-Check the snapshot's \`last_error\` field. If the daemon exited, restart it:
+Check the snapshot's \`last_error\` field. If the daemon exited or
+needs to be re-pointed at a recovered server, kick the LaunchAgent:
 
-      nohup $BRAIN_VALIDATOR daemon > /tmp/brain-validator.out 2>&1 &
-      disown
+      $BRAIN_VALIDATOR restart
       sleep 3
       $BRAIN_VALIDATOR status --json
 
 If the second check still reports unhealthy, do NOT proceed with the
 user's request. Surface \`last_error\` plus the tail of
-/tmp/brain-validator.out and ask the user how to proceed. Common
-causes: workspace-server unreachable, the chain has a break newer than
-this device's registration, or the device's signing key was rotated
-server-side.
+~/Library/Logs/brain-validator.err.log and ask the user how to
+proceed. Common causes: workspace-server unreachable, the chain has a
+break newer than this device's registration, or the device's signing
+key was rotated server-side.
 
 EOF
 fi
