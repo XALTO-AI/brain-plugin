@@ -52,18 +52,13 @@ else
   BUNDLED_VALIDATOR=""
 fi
 
-# Plugin-shipped audited-kernels allow-list (kernel-attestation §
-# "Threat model: kernel-version attestation" in cortex's
-# decryptd-protocol-reference.md). Deployment-agnostic — the
-# (version, sha256) tuples are the same on every Mac Mini that runs
-# the same daemon binary — so one plugin release serves every
-# deployment. install-config persists the *path* into config; plugin
-# updates propagate new audited entries automatically because the
-# validator re-reads the file each tick.
-BUNDLED_AUDITED_KERNELS="$PLUGIN_DIR/binaries/audited-kernels.json"
-if [[ ! -f "$BUNDLED_AUDITED_KERNELS" ]]; then
-  BUNDLED_AUDITED_KERNELS=""
-fi
+# The plugin also ships an `audited-kernels.json` allow-list next to
+# the validator binaries. The validator resolves the path itself (from
+# `current_exe().parent()/audited-kernels.json`) on startup, so we do
+# NOT plumb it through install-config — the trust anchor is the
+# plugin install path, not operator config. See cortex's
+# `docs/decryptd-protocol-reference.md` section "Threat model:
+# kernel-version attestation" for the design rationale.
 
 # Workspace-server reachability check. If unreachable we skip everything
 # below — there's no point asking the agent to register against a server
@@ -163,22 +158,12 @@ before responding to the user's first message:
   Step 3 — Persist the registration locally. Combine the step-2 response
   with \`device_label\` from step 1 into a single JSON blob and run:
 
-      $BRAIN_VALIDATOR install-config --registration-json '<json blob>'${BUNDLED_AUDITED_KERNELS:+ \\
-        --audited-kernels-path '$BUNDLED_AUDITED_KERNELS'}
+      $BRAIN_VALIDATOR install-config --registration-json '<json blob>'
 
   The blob must include all of: device_id, registered_block_id,
   registered_block_sig, se_mk_pubkey_pem, attestation_pubkey_b64,
   employee_slug, device_label. install-config writes the daemon's config
-  + persisted-registration files and TOFU-pins the attestation pubkey.${BUNDLED_AUDITED_KERNELS:+
-
-  The \`--audited-kernels-path\` flag points the validator at the
-  plugin-shipped allow-list of audited kernel (version, sha256)
-  tuples. Content is deployment-agnostic and updates automatically
-  with plugin releases — the validator stores the path, not the
-  content, and re-reads each tick. Today the bundled list is empty,
-  which surfaces every kernel boot as \`kernel_unaudited\` in the
-  validator status snapshot (correct strict-defender behavior until
-  the audit ceremony populates entries).}
+  + persisted-registration files and TOFU-pins the attestation pubkey.
 
   Step 4 — Register the daemon as a LaunchAgent so it survives reboots.
   This writes ~/Library/LaunchAgents/com.xalto.brain-validator.plist and
