@@ -1,7 +1,7 @@
 {
   "name": "xalto",
   "description": "Xalto Brain plugin — thin client connecting Claude Code to the workspace-server for entity memory, team context, and cross-system intelligence.",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "author": {
     "name": "Xalto"
   },
