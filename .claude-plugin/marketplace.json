@@ -5,13 +5,7 @@
     "email": "devtools@xalto.ai"
   },
   "metadata": {
-    "description": "Xalto Brain workspace plugins"
+    "description": "Retired — the Xalto Brain plugin is no longer distributed. Its MCP connection and session instructions are now served by the brain itself; the audit-chain validator is installed by the Xalto desktop app. See README."
   },
-  "plugins": [
-    {
-      "name": "xalto",
-      "source": "./xalto",
-      "description": "Xalto — MCP connection to the Brain memory server with Google SSO"
-    }
-  ]
+  "plugins": []
 }

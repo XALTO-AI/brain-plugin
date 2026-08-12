@@ -1,53 +1,62 @@
-# Xalto Brain — Claude Code Plugin
+# Xalto Brain — Claude Code Plugin (retired)
 
-Thin-client [Claude Code](https://claude.com/claude-code) plugin that connects an interactive session to a Brain workspace-server. Provides MCP tools for memory, entity, and team context, plus a session-start hook that auto-loads the user's profile.
+**This plugin is retired and no longer distributed.** The marketplace still
+resolves, so existing installs keep working, but it now offers no plugins and
+this repository ships no code.
 
-This repository is the public Claude Code marketplace for Xalto plugins. The server itself lives in `XALTO-AI/Brain` (private) and is hosted by your organization — typically a Mac Mini behind a reverse proxy at a dedicated URL.
+Nothing is lost. Everything the plugin did is now done by something better
+placed to do it.
 
-## Install
+## Where each piece went
+
+| The plugin did | Now |
+|---|---|
+| Provided the `brain` MCP server | Configured by the **Xalto desktop app**, which points your assistant at a local broker that injects a fresh token per request |
+| Told the assistant to call `memory_load_profile` at session start | Served by **brain itself**, in the MCP `initialize` response |
+| Installed, registered and health-checked the `brain-validator` daemon | Owned by the **Xalto desktop app**, under Connections → Audit-chain validator |
+| Bundled six `brain-validator` binaries + a signed `.pkg` download | Ships **inside the desktop app**, code-signed and notarized with it |
+
+## Why it was retired
+
+Two reasons, and the second is the one that mattered.
+
+**It only ever worked for Claude Code.** The session-start directive lived in a
+bash hook wired to a Claude-Code-specific lifecycle event. Claude Desktop,
+Codex, the Xalto app's own chat, and anything a customer brought connected to
+the same brain and got none of it. Moving that text into the MCP `initialize`
+response means every conformant client receives it — same instruction,
+delivered by the protocol instead of by one vendor's plugin mechanism.
+
+**Device lifecycle does not belong in a chat session.** The hook probed the
+validator daemon on *every* session and, on an unhealthy reading, injected
+instructions telling the agent to run local binaries and to refuse the user's
+actual request until the checks passed. The daemon is per-device state with a
+lifetime measured in months; a chat session is per-invocation and may not happen
+for days. That put an install/recovery workflow in the path of unrelated work.
+
+Removing the hook (v0.6.2) fixed the symptom. Retiring the plugin removes the
+mechanism.
+
+## If you still have it installed
+
+Uninstall it — otherwise you get the `memory_load_profile` directive twice, once
+from the stale hook and once from the MCP server:
 
 ```
-/plugin marketplace add XALTO-AI/brain-plugin
-/plugin install xalto@xalto
-/mcp                                  # Google OAuth flow against your Brain server
+/plugin uninstall xalto@xalto
+/plugin marketplace remove XALTO-AI/brain-plugin
 ```
 
-After installation, MCP tools are available as `mcp__plugin_xalto_brain__*` (e.g. `connection_status`, `memory_search`, `entity_get`, …).
+Then use the Xalto desktop app, which configures the MCP connection for you.
 
-## Configuration
+## Why this repo still exists
 
-| Env var             | Default                           | What it does                                              |
-|---------------------|-----------------------------------|-----------------------------------------------------------|
-| `BRAIN_SERVER_URL`  | `https://127.0.0.1:7443`          | Base URL of the workspace-server. Set this to your org's Brain URL. |
-
-Set the env var before launching Claude Code if your Brain server isn't running locally:
-
-```bash
-export BRAIN_SERVER_URL="https://brain.your-org.example"
-claude
-```
-
-For Claude Desktop and other MCP clients that reject self-signed certs, point this at a URL with a trusted certificate (e.g. your org's reverse proxy).
-
-## What's in this repo
-
-```
-.claude-plugin/marketplace.json   # registry manifest
-xalto/                            # the plugin (MCP server-key remains "brain")
-  .claude-plugin/plugin.json
-  .mcp.json                       # MCP transport config
-  hooks/                          # session-start hook
-  commands/                       # /brain-status slash command
-  README.md
-```
-
-The plugin is intentionally thin: ~70 lines of bash + JSON + markdown. All real logic lives server-side.
-
-## Auth
-
-Authentication is handled by Claude Code's MCP OAuth 2.1 flow. On first `/mcp` against the server, your browser opens for Google consent, the server validates your domain via Google Workspace, and Claude Code persists the access token. No tokens or shared secrets are baked into the plugin.
-
-Only Google Workspace users in domains your Brain server has been configured to allow can authenticate. The plugin itself does no access control — that lives in the server.
+It is a tombstone, not a deletion. The marketplace URL is baked into every
+existing install; removing the repository outright would break `/plugin`
+resolution for anyone who has not uninstalled yet, and would delete the history
+explaining why any of this was built. Git history holds the full plugin —
+including the audit-chain bootstrap, the Ed25519 attestation verifier, and the
+TOFU pinning model — at tag `v0.6.2`.
 
 ## License
 
